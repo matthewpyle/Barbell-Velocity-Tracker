@@ -1,3 +1,6 @@
+// Firmware v0.1 - Bench press IMU logger
+// Features: vertical accel/velocity, rep counting, CSV over Serial
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_LSM6DSOX.h> // https://github.com/adafruit/Adafruit_LSM6DS
