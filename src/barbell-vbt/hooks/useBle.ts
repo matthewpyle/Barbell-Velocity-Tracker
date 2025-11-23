@@ -1,16 +1,11 @@
-// hooks/useBle.ts
-import { fromByteArray } from "base64-js";
+// src/hooks/useBle.ts
 import { useEffect, useRef, useState } from "react";
 import { AppState, PermissionsAndroid, Platform } from "react-native";
 import { Device, Subscription } from "react-native-ble-plx";
 import {
-  CTRL_UUID,
   DATA_UUID,
   manager,
-  METRIC_UUID,
-  parseMetric,
   parsePkt,
-  RepEvent,
   Sample,
   SERVICE_UUID,
   SetSummary,
@@ -19,6 +14,7 @@ import {
 
 async function ensureBlePermissions(): Promise<boolean> {
   if (Platform.OS !== "android") return true;
+
   const wanted =
     Platform.Version >= 31
       ? [
@@ -26,6 +22,7 @@ async function ensureBlePermissions(): Promise<boolean> {
           PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
         ]
       : [PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION];
+
   const res = await PermissionsAndroid.requestMultiple(wanted);
   return Object.values(res).every(
     (v) => v === PermissionsAndroid.RESULTS.GRANTED
@@ -36,12 +33,15 @@ export function useBle() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [connected, setConnected] = useState<Device | null>(null);
   const [sample, setSample] = useState<Sample | null>(null);
+
   const [active, setActive] = useState(false);
-  const [repEvents, setRepEvents] = useState<RepEvent[]>([]);
+  const [samples, setSamples] = useState<Sample[]>([]);
   const [summary, setSummary] = useState<SetSummary | null>(null);
+  const activeRef = useRef(false);
 
   const subs = useRef<Subscription[]>([]);
 
+  // Cleanup on unmount / app bg
   useEffect(() => {
     const appSub = AppState.addEventListener("change", (s) => {
       if (s !== "active") manager.stopDeviceScan();
@@ -57,6 +57,7 @@ export function useBle() {
 
   const scan = async () => {
     if (!(await ensureBlePermissions())) return;
+
     setDevices([]);
     manager.startDeviceScan(null, { allowDuplicates: false }, (err, dev) => {
       if (err || !dev) return;
@@ -67,6 +68,7 @@ export function useBle() {
         );
       }
     });
+
     setTimeout(() => manager.stopDeviceScan(), 6000);
   };
 
@@ -74,16 +76,17 @@ export function useBle() {
     manager.stopDeviceScan();
     subs.current.forEach((s) => s?.remove());
     subs.current = [];
+
     setSample(null);
     setActive(false);
-    setRepEvents([]);
+    setSamples([]);
     setSummary(null);
 
     const d = await dev.connect();
     setConnected(d);
     await d.discoverAllServicesAndCharacteristics();
 
-    // RAW data notifications (only while ACTIVE)
+    // Single data stream: t_ms,aZ_filt,vZ,rep_id
     subs.current.push(
       d.monitorCharacteristicForService(
         SERVICE_UUID,
@@ -91,25 +94,12 @@ export function useBle() {
         (error, ch) => {
           if (error || !ch?.value) return;
           const s = parsePkt(ch.value);
-          if (s) setSample(s);
-        }
-      )
-    );
+          if (!s) return;
 
-    // METRICS notifications (rep events + summary)
-    subs.current.push(
-      d.monitorCharacteristicForService(
-        SERVICE_UUID,
-        METRIC_UUID,
-        (error, ch) => {
-          if (error || !ch?.value) return;
-          const msg = parseMetric(ch.value);
-          if (!msg) return;
-          if (msg.type === "rep") {
-            setRepEvents((prev) => [msg.data, ...prev].slice(0, 50)); // keep last 50
-          } else if (msg.type === "summary") {
-            setSummary(msg.data);
-            setActive(false);
+          setSample(s);
+
+          if (activeRef.current) {
+            setSamples((prev) => [...prev, s]);
           }
         }
       )
@@ -122,39 +112,71 @@ export function useBle() {
       subs.current = [];
       if (connected) await connected.cancelConnection();
     } catch {}
+
     setConnected(null);
     setSample(null);
     setActive(false);
-    setRepEvents([]);
+    setSamples([]);
     setSummary(null);
   };
 
-  const writeCtrl = async (bytes: number[], withResponse = false) => {
-    if (!connected) return;
-    const b64 = fromByteArray(Uint8Array.from(bytes));
-    if (withResponse) {
-      await connected.writeCharacteristicWithResponseForService(
-        SERVICE_UUID,
-        CTRL_UUID,
-        b64
-      );
-    } else {
-      await connected.writeCharacteristicWithoutResponseForService(
-        SERVICE_UUID,
-        CTRL_UUID,
-        b64
-      );
-    }
-  };
-
-  const startSet = async () => {
-    await writeCtrl([0x01], false);
+  const startSet = () => {
+    activeRef.current = true;
     setActive(true);
-    setRepEvents([]);
+    setSamples([]);
     setSummary(null);
   };
-  const stopSet = async () => {
-    await writeCtrl([0x02], false); /* summary will arrive via notify */
+
+  const stopSet = () => {
+    activeRef.current = false;
+    setActive(false);
+
+    if (!samples.length) {
+      setSummary(null);
+      return;
+    }
+
+    const firstT = samples[0].tMs;
+    const lastT = samples[samples.length - 1].tMs;
+    const setDurMs = lastT - firstT;
+
+    // Unique repIds > 0
+    const repIds = Array.from(
+      new Set(samples.map((s) => s.repId).filter((r) => r > 0))
+    );
+    const totalReps = repIds.length;
+
+    let peakConcentricVel = 0;
+    const perRepMeans: number[] = [];
+
+    repIds.forEach((repId) => {
+      const thisRep = samples.filter(
+        (s) => s.repId === repId && s.vZ > 0 // concentric only
+      );
+      if (!thisRep.length) return;
+
+      const vels = thisRep.map((s) => s.vZ);
+      const mean =
+        vels.reduce((acc, v) => acc + v, 0) / Math.max(vels.length, 1);
+      perRepMeans.push(mean);
+
+      const peak = Math.max(...vels);
+      if (peak > peakConcentricVel) peakConcentricVel = peak;
+    });
+
+    const meanConcentricVel =
+      perRepMeans.length > 0
+        ? perRepMeans.reduce((a, b) => a + b, 0) / perRepMeans.length
+        : 0;
+
+    const summary: SetSummary = {
+      totalReps,
+      setDurMs,
+      meanConcentricVel,
+      peakConcentricVel,
+    };
+
+    setSummary(summary);
   };
 
   return {
@@ -162,7 +184,6 @@ export function useBle() {
     connected,
     sample,
     active,
-    repEvents,
     summary,
     scan,
     connect,
