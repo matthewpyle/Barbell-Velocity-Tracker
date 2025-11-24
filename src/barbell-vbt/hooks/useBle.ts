@@ -37,7 +37,15 @@ export function useBle() {
   const [active, setActive] = useState(false);
   const [samples, setSamples] = useState<Sample[]>([]);
   const [summary, setSummary] = useState<SetSummary | null>(null);
+
+  // "Is recording" flag usable inside BLE callback
   const activeRef = useRef(false);
+
+  // Global rep offset at the start of a set
+  const startRepRef = useRef(0);
+
+  // Rep number within the current set (what the UI should show)
+  const [currentSetRep, setCurrentSetRep] = useState(0);
 
   const subs = useRef<Subscription[]>([]);
 
@@ -81,6 +89,9 @@ export function useBle() {
     setActive(false);
     setSamples([]);
     setSummary(null);
+    activeRef.current = false;
+    startRepRef.current = 0;
+    setCurrentSetRep(0);
 
     const d = await dev.connect();
     setConnected(d);
@@ -100,6 +111,10 @@ export function useBle() {
 
           if (activeRef.current) {
             setSamples((prev) => [...prev, s]);
+
+            // Rep number within this set: global rep minus starting offset
+            const repWithinSet = Math.max(0, s.repId - startRepRef.current);
+            setCurrentSetRep(repWithinSet);
           }
         }
       )
@@ -118,11 +133,20 @@ export function useBle() {
     setActive(false);
     setSamples([]);
     setSummary(null);
+    activeRef.current = false;
+    startRepRef.current = 0;
+    setCurrentSetRep(0);
   };
 
   const startSet = () => {
+    // Start recording
     activeRef.current = true;
     setActive(true);
+
+    // Remember the global rep id at start of set
+    startRepRef.current = sample?.repId ?? 0;
+    setCurrentSetRep(0);
+
     setSamples([]);
     setSummary(null);
   };
@@ -133,6 +157,7 @@ export function useBle() {
 
     if (!samples.length) {
       setSummary(null);
+      setCurrentSetRep(0);
       return;
     }
 
@@ -140,29 +165,37 @@ export function useBle() {
     const lastT = samples[samples.length - 1].tMs;
     const setDurMs = lastT - firstT;
 
-    // Unique repIds > 0
-    const repIds = Array.from(
-      new Set(samples.map((s) => s.repId).filter((r) => r > 0))
-    );
-    const totalReps = repIds.length;
+    // Build map of repWithinSet -> list of concentric velocities
+    const repMap = new Map<number, number[]>();
+
+    for (const s of samples) {
+      const repWithinSet = s.repId - startRepRef.current;
+      if (repWithinSet <= 0) continue; // ignore "rep 0" / anything before start
+      if (s.vZ <= 0) continue; // concentric only
+
+      if (!repMap.has(repWithinSet)) {
+        repMap.set(repWithinSet, []);
+      }
+      repMap.get(repWithinSet)!.push(s.vZ);
+    }
+
+    const repIdsWithin = Array.from(repMap.keys()).sort((a, b) => a - b);
+    const totalReps = repIdsWithin.length;
 
     let peakConcentricVel = 0;
     const perRepMeans: number[] = [];
 
-    repIds.forEach((repId) => {
-      const thisRep = samples.filter(
-        (s) => s.repId === repId && s.vZ > 0 // concentric only
-      );
-      if (!thisRep.length) return;
+    for (const repIdWithin of repIdsWithin) {
+      const vels = repMap.get(repIdWithin)!;
+      if (!vels.length) continue;
 
-      const vels = thisRep.map((s) => s.vZ);
       const mean =
         vels.reduce((acc, v) => acc + v, 0) / Math.max(vels.length, 1);
       perRepMeans.push(mean);
 
       const peak = Math.max(...vels);
       if (peak > peakConcentricVel) peakConcentricVel = peak;
-    });
+    }
 
     const meanConcentricVel =
       perRepMeans.length > 0
@@ -177,6 +210,8 @@ export function useBle() {
     };
 
     setSummary(summary);
+    // optional: leave currentSetRep showing last rep, or reset to 0
+    // setCurrentSetRep(0);
   };
 
   return {
@@ -190,5 +225,6 @@ export function useBle() {
     disconnect,
     startSet,
     stopSet,
+    currentSetRep, // used by the UI for "Rep N"
   };
 }

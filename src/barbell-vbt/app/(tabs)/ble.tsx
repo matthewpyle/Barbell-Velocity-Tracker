@@ -1,6 +1,6 @@
 // app/(tabs)/ble.tsx
 import React from "react";
-import { Button, FlatList, Text, View, ScrollView } from "react-native";
+import { Button, FlatList, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useBle } from "../../hooks/useBle";
 
@@ -16,11 +16,17 @@ export default function BleScreen() {
     disconnect,
     startSet,
     stopSet,
+    currentSetRep,
   } = useBle();
+
+  // Global values from the latest sample
+  const currentVelocity = sample?.vZ ?? 0;
 
   return (
     <SafeAreaView style={{ flex: 1, padding: 16, gap: 12 }}>
-      <Text style={{ fontSize: 22, fontWeight: "700" }}>BLE • BarbellIMU</Text>
+      <Text style={{ fontSize: 22, fontWeight: "700" }}>
+        Smart Barbell Collar
+      </Text>
 
       {!connected && (
         <>
@@ -51,6 +57,8 @@ export default function BleScreen() {
       {connected && (
         <View style={{ flex: 1, gap: 12 }}>
           <Text>Connected: {connected.name ?? connected.id}</Text>
+
+          {/* Controls */}
           <View style={{ flexDirection: "row", gap: 8 }}>
             {!active ? (
               <Button title="Start Set" onPress={startSet} />
@@ -60,22 +68,38 @@ export default function BleScreen() {
             <Button title="Disconnect" onPress={disconnect} />
           </View>
 
-          {/* Latest sample */}
+          {/* Big live metrics */}
           <View
             style={{
               marginTop: 12,
-              padding: 12,
+              padding: 16,
               borderWidth: 1,
-              borderRadius: 10,
+              borderRadius: 16,
+              alignItems: "center",
+              justifyContent: "center",
             }}
           >
-            <Text style={{ fontSize: 18, fontWeight: "700" }}>
-              Latest sample
+            <Text style={{ fontSize: 18, fontWeight: "600", marginBottom: 8 }}>
+              Live set
             </Text>
-            <Text>t_ms: {sample?.tMs ?? "--"}</Text>
-            <Text>aZ (m/s²): {sample?.aZ?.toFixed?.(3) ?? "--"}</Text>
-            <Text>vZ (m/s): {sample?.vZ?.toFixed?.(3) ?? "--"}</Text>
-            <Text>rep_id: {sample?.repId ?? "--"}</Text>
+            <Text style={{ fontSize: 48, fontWeight: "800" }}>
+              Rep {currentSetRep}
+            </Text>
+            <Text style={{ fontSize: 20, marginTop: 8 }}>
+              Velocity: {currentVelocity.toFixed(2)} m/s
+            </Text>
+            {!active && (
+              <Text
+                style={{
+                  fontSize: 12,
+                  color: "#666",
+                  marginTop: 4,
+                  textAlign: "center",
+                }}
+              >
+                Press Start Set and perform reps to update.
+              </Text>
+            )}
           </View>
 
           {/* Set summary */}
@@ -85,7 +109,6 @@ export default function BleScreen() {
               padding: 12,
               borderWidth: 1,
               borderRadius: 10,
-              flex: 1,
             }}
           >
             <Text style={{ fontSize: 18, fontWeight: "700" }}>Set summary</Text>
@@ -105,13 +128,6 @@ export default function BleScreen() {
             ) : (
               <Text style={{ marginTop: 8 }}>—</Text>
             )}
-
-            <ScrollView style={{ marginTop: 12 }}>
-              <Text style={{ fontSize: 12, color: "#666" }}>
-                Press Start Set to begin recording samples. Press Stop Set to
-                compute the set summary from streamed vZ and rep_id.
-              </Text>
-            </ScrollView>
           </View>
         </View>
       )}
