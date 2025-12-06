@@ -13,23 +13,58 @@ export default function TabLayout() {
       screenOptions={{
         headerShown: false,
         tabBarButton: HapticTab,
+        tabBarActiveTintColor: "#111",
+        tabBarInactiveTintColor: "#999",
       }}
     >
+      {/* Home – app/(tabs)/index.tsx */}
       <Tabs.Screen
         name="index"
         options={{
           title: "Home",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="house.fill" color={color} />
+            <IconSymbol size={24} name="house.fill" color={color} />
           ),
         }}
       />
+
+      {/* Train – app/(tabs)/train.tsx */}
       <Tabs.Screen
-        name="ble"
+        name="train"
         options={{
-          title: "Connect",
+          title: "Train",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="paperplane.fill" color={color} />
+            <IconSymbol
+              size={24}
+              name="figure.strengthtraining.traditional"
+              color={color}
+            />
+          ),
+        }}
+      />
+
+      {/* Device – app/(tabs)/device.tsx */}
+      <Tabs.Screen
+        name="device"
+        options={{
+          title: "Device",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol
+              size={24}
+              name="antenna.radiowaves.left.and.right"
+              color={color}
+            />
+          ),
+        }}
+      />
+
+      {/* History – app/(tabs)/history.tsx */}
+      <Tabs.Screen
+        name="history"
+        options={{
+          title: "History",
+          tabBarIcon: ({ color }) => (
+            <IconSymbol size={24} name="chart.bar.xaxis" color={color} />
           ),
         }}
       />
