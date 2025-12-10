@@ -11,7 +11,7 @@ A compact, BLE-enabled smart barbell collar for velocity-based training (VBT). T
 
 - RPE/RIR assist: estimates using velocity loss and historical load–velocity profile.
 
-- Portable hardware: ESP32 (S3 target) + 6-DoF IMU, LiPo battery, USB-C charging, on/off + status LEDs.
+- Portable hardware: ESP32 (S3 target) + 3-DoF IMU, LiPo battery, USB-C charging, on/off + status LEDs.
 
 - Smart clip form factor: mounts to a standard plastic barbell collar.
 
@@ -29,7 +29,7 @@ A compact, BLE-enabled smart barbell collar for velocity-based training (VBT). T
 
 <h1>Firmware</h1>
 
--ESP-IDF/Arduino framework
+-ESP-IDF/Arduino framework C++
 
 -I²C IMU driver, DMA sampling
 
@@ -59,19 +59,12 @@ A compact, BLE-enabled smart barbell collar for velocity-based training (VBT). T
 
 <h1>Repo Structure</h1>
 
-/hardware<br>
-  ├─ schematics/ (PDF, source)<br>
-  ├─ pcb/ (Gerbers, BOM)<br>
-  └─ enclosure/ (STL, STEP)<br>
 /firmware<br>
   ├─ src/ (drivers, BLE, algos)<br>
   ├─ include/<br>
-  └─ platformio.ini or CMakeLists.txt<br>
-/app<br>
-  ├─ app/ (Expo project)<br>
-  └─ src/ (screens, BLE, charts)<br>
+  └─ platformio.ini<br>
+/src<br>
+  ├─ barbell-vbt/ (Expo project)<br>
+  
 /docs<br>
-  ├─ quickstart.md<br>
-  ├─ calibration.md<br>
-  ├─ algorithms.md<br>
-  └─ test-protocols.md<br>
+
