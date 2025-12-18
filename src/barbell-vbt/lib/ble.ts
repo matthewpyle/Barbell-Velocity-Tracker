@@ -8,6 +8,7 @@ export const manager = new BleManager();
 export const TARGET_NAME = "BarbellIMU";
 export const SERVICE_UUID = "12345678-1234-1234-1234-1234567890ab";
 export const DATA_UUID = "abcd1234-1234-1234-1234-1234567890ab";
+export const CONTROL_UUID = "deadbeef-1234-1234-1234-1234567890ab";
 
 // What we actually get from the ESP32 over BLE
 export type Sample = {
@@ -15,6 +16,7 @@ export type Sample = {
   aZ: number; // filtered vertical accel (m/s^2)
   vZ: number; // vertical velocity (m/s)
   repId: number; // rep counter
+  calibFlag: number; // calibration flag
 };
 
 /**
@@ -25,7 +27,13 @@ export function parsePkt(base64Value: string): Sample | null {
   try {
     const bytes = toByteArray(base64Value);
     const text = String.fromCharCode(...bytes).trim();
-    const [tStr, aStr, vStr, repStr] = text.split(",");
+
+    const parts = text.split(",");
+    if (parts.length < 4) {
+      return null; // malformed packet
+    }
+
+    const [tStr, aStr, vStr, repStr, calibStr] = parts;
 
     const tMs = Number(tStr);
     const aZ = Number(aStr);
@@ -36,8 +44,12 @@ export function parsePkt(base64Value: string): Sample | null {
       return null;
     }
 
-    return { tMs, aZ, vZ, repId };
-  } catch (e) {
+    // 5th field is optional; default to 0 if not present
+    const calibFlag = calibStr !== undefined ? Number(calibStr) : 0;
+    const safeCalibFlag = Number.isNaN(calibFlag) ? 0 : calibFlag;
+
+    return { tMs, aZ, vZ, repId, calibFlag: safeCalibFlag };
+  } catch {
     return null;
   }
 }

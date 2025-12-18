@@ -4,13 +4,15 @@ import { AppState, PermissionsAndroid, Platform } from "react-native";
 import { Device, Subscription } from "react-native-ble-plx";
 import {
   DATA_UUID,
+  SERVICE_UUID,
+  CONTROL_UUID,
+  TARGET_NAME,
   manager,
   parsePkt,
   Sample,
-  SERVICE_UUID,
   SetSummary,
-  TARGET_NAME,
 } from "../lib/ble";
+import { fromByteArray } from "base64-js"; // if you're already using toByteArray, this is from same lib
 
 async function ensureBlePermissions(): Promise<boolean> {
   if (Platform.OS !== "android") return true;
@@ -35,11 +37,15 @@ export function useBle() {
   const [sample, setSample] = useState<Sample | null>(null);
 
   const [active, setActive] = useState(false);
+  const [calibrating, setCalibrating] = useState(false);
   const [samples, setSamples] = useState<Sample[]>([]);
   const [summary, setSummary] = useState<SetSummary | null>(null);
 
   // "Is recording" flag usable inside BLE callback
   const activeRef = useRef(false);
+
+  // Track current connected device for control writes
+  const connectedRef = useRef<Device | null>(null);
 
   // Global rep offset at the start of a set
   const startRepRef = useRef(0);
@@ -87,6 +93,7 @@ export function useBle() {
 
     setSample(null);
     setActive(false);
+    setCalibrating(false);
     setSamples([]);
     setSummary(null);
     activeRef.current = false;
@@ -94,20 +101,24 @@ export function useBle() {
     setCurrentSetRep(0);
 
     const d = await dev.connect();
-    setConnected(d);
     await d.discoverAllServicesAndCharacteristics();
 
-    // Single data stream: t_ms,aZ_filt,vZ,rep_id
+    setConnected(d);
+    connectedRef.current = d;
+
+    // Data stream: t_ms,aZ_filt,vZ,rep_id[,calibFlag]
     subs.current.push(
       d.monitorCharacteristicForService(
         SERVICE_UUID,
         DATA_UUID,
         (error, ch) => {
           if (error || !ch?.value) return;
+
           const s = parsePkt(ch.value);
           if (!s) return;
 
           setSample(s);
+          setCalibrating(s.calibFlag === 1);
 
           if (activeRef.current) {
             setSamples((prev) => [...prev, s]);
@@ -129,8 +140,11 @@ export function useBle() {
     } catch {}
 
     setConnected(null);
+    connectedRef.current = null;
+
     setSample(null);
     setActive(false);
+    setCalibrating(false);
     setSamples([]);
     setSummary(null);
     activeRef.current = false;
@@ -139,7 +153,9 @@ export function useBle() {
   };
 
   const startSet = () => {
-    // Start recording
+    // Don't allow starting a set while calibrating
+    if (calibrating) return;
+
     activeRef.current = true;
     setActive(true);
 
@@ -214,6 +230,29 @@ export function useBle() {
     // setCurrentSetRep(0);
   };
 
+  // Send "start calibration" command to firmware via control characteristic
+  const calibrate = async () => {
+    const dev = connectedRef.current;
+    if (!dev) return;
+
+    try {
+      // Command protocol: single byte 0x01 = start calibration
+      const cmdBytes = Uint8Array.of(0x01);
+      const base64 = fromByteArray(cmdBytes);
+
+      await dev.writeCharacteristicWithResponseForService(
+        SERVICE_UUID,
+        CONTROL_UUID,
+        base64
+      );
+
+      // Optimistically set calibrating until data comes back with calibFlag=1/0
+      setCalibrating(true);
+    } catch (e) {
+      console.warn("BLE calibrate() error", e);
+    }
+  };
+
   return {
     devices,
     connected,
@@ -226,5 +265,7 @@ export function useBle() {
     startSet,
     stopSet,
     currentSetRep, // used by the UI for "Rep N"
+    calibrating, // used to show "Calibrating..." and disable Start Set
+    calibrate, // call from a button in the app
   };
 }
