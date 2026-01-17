@@ -1,23 +1,30 @@
-// Firmware v0.2 - Bench press IMU logger + BLE streaming
-// - LSM6DSOX accel/gyro
-// - Vertical acceleration & velocity
-// - Simple rep counter
-// - CSV over Serial
-// - CSV over BLE notify characteristic
+// Firmware v0.3 - Bench press IMU logger + BLE (custom PCB with LIS3DHTR)
+// Port of v0.2 logic to LIS3DHTR + new pins
+// Vertical acceleration & velocity, rep counter, calibration
+// CSV over Serial (for debugging)
+// CSV text over BLE DATA_UUID (compatible with lib/ble.ts parsePkt)
+// CTRL 0x01 triggers calibration
+// Heartbeat LED on GPIO48
 
 #include <Arduino.h>
 #include <Wire.h>
-#include <Adafruit_LSM6DSOX.h>  // IMU
+#include <Adafruit_LIS3DH.h>
+#include <Adafruit_Sensor.h>
 #include <math.h>
-#include <NimBLEDevice.h>       // BLE
+#include <NimBLEDevice.h>
 
 // --------- IMU / motion config ---------
-#define SDA_PIN 21
-#define SCL_PIN 22
+// CUSTOM PCB PINS: IO40 = SDA, IO41 = SCL
+#define SDA_PIN 40
+#define SCL_PIN 41
 
-Adafruit_LSM6DSOX imu;
+// Status LED
+#define LED_PIN 48
 
-static float ODR_HZ = 104.0f;   // IMU data rate
+Adafruit_LIS3DH imu;
+
+// LIS3DHTR ODR ≈ 100 Hz
+static float ODR_HZ = 100.0f;   // IMU data rate
 uint32_t lastMicros = 0;
 
 enum RepState { IDLE, ACTIVE };
@@ -33,35 +40,33 @@ const float LPF_ALPHA = 0.1f;   // low-pass factor
 const float GRAVITY   = 9.80665f;
 
 // Gravity calibration
-float gravityEst = GRAVITY;   
-bool  calibRunning = false;      // true while calibration is in progress
+float    gravityEst    = GRAVITY;
+bool     calibRunning  = false;   // true while calibration is in progress
 uint32_t calibStart_ms = 0;
-double calibSumAz = 0.0;
-uint32_t calibSamples = 0;
-uint8_t calibFlag = 0;   // 0 = normal, 1 = calibrating
-
+double   calibSumAz    = 0.0;
+uint32_t calibSamples  = 0;
+uint8_t  calibFlag     = 0;       // 0 = normal, 1 = calibrating
 
 const uint32_t CALIB_DURATION_MS = 2000;  // 2 seconds
 
 // Rep detection tuning
 // Assume positive vZ = bar moving UP (concentric)
-const float VEL_START_THRESH   = 0.10f;   // m/s
-const float VEL_END_THRESH     = 0.02f;   // m/s
-const float ACC_STILL_THRESH   = 0.30f;   // m/s^2
-const uint16_t MIN_REP_TIME_MS = 200;     // ms
+const float    VEL_START_THRESH   = 0.10f;   // m/s
+const float    VEL_END_THRESH     = 0.02f;   // m/s
+const float    ACC_STILL_THRESH   = 0.30f;   // m/s^2
+const uint16_t MIN_REP_TIME_MS    = 200;     // ms
 
 uint32_t repStart_ms = 0;
 
-// --------- BLE config ---------
+// --------- BLE config (match lib/ble.ts) ---------
 #define BARBELL_SERVICE_UUID "12345678-1234-1234-1234-1234567890ab"
 #define DATA_CHAR_UUID       "abcd1234-1234-1234-1234-1234567890ab"
-#define CONTROL_CHAR_UUID    "deadbeef-1234-1234-1234-1234567890ab" 
+#define CONTROL_CHAR_UUID    "deadbeef-1234-1234-1234-1234567890ab"
 
-
-NimBLEServer*        pServer   = nullptr;
+NimBLEServer*         pServer   = nullptr;
 NimBLECharacteristic* pDataChar = nullptr;
-bool deviceConnected = false;
-uint32_t lastBLE_ms  = 0;       // for rate-limiting BLE sends
+bool deviceConnected           = false;
+uint32_t lastBLE_ms            = 0;       // send ~20 Hz
 
 class MyServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer* pServer) override {
@@ -74,18 +79,19 @@ class MyServerCallbacks : public NimBLEServerCallbacks {
     NimBLEDevice::startAdvertising();
   }
 };
+
 void startCalibration() {
-  calibRunning = true;
-  calibFlag = 1;
+  calibRunning  = true;
+  calibFlag     = 1;
   calibStart_ms = millis();
-  calibSumAz = 0.0;
-  calibSamples = 0;
+  calibSumAz    = 0.0;
+  calibSamples  = 0;
 
   // Reset motion state while calibrating
-  vZ = 0.0f;
+  vZ      = 0.0f;
   aZ_filt = 0.0f;
-  state = IDLE;
-  rep_id = 0;
+  state   = IDLE;
+  rep_id  = 0;
 
   Serial.println("CAL: starting gravity calibration, keep bar still...");
 }
@@ -101,6 +107,7 @@ class ControlCallbacks : public NimBLECharacteristicCallbacks {
         Serial.println("BLE CTRL: start calibration command received");
         startCalibration();
       }
+      // 0x02 reserved for future use (e.g. stop set)
     }
   }
 };
@@ -114,14 +121,14 @@ void initBLE() {
 
   NimBLEService* pService = pServer->createService(BARBELL_SERVICE_UUID);
 
-  // Data characteristic (unchanged)
+  // Data characteristic – app subscribes here and parsePkt() expects CSV text
   pDataChar = pService->createCharacteristic(
       DATA_CHAR_UUID,
       NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
   );
   pDataChar->setValue("ready");
 
-  // NEW: control characteristic (write-only from app)
+  // Control characteristic – app writes here to trigger calibration
   NimBLECharacteristic* pControlChar = pService->createCharacteristic(
       CONTROL_CHAR_UUID,
       NIMBLE_PROPERTY::WRITE
@@ -138,31 +145,39 @@ void initBLE() {
   Serial.println("BLE: advertising as 'BarbellIMU'");
 }
 
-
-
 // --------- Setup ---------
 void setup() {
+  pinMode(LED_PIN, OUTPUT);
+  // Assume LED is active-LOW
+  digitalWrite(LED_PIN, HIGH);   // LED off
+
   Serial.begin(115200);
   delay(300);
 
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(400000);
 
-  // Init IMU
-  if (!imu.begin_I2C()) {
-    Serial.println("ERROR: IMU not found");
+  // Init IMU (LIS3DHTR via Adafruit LIS3DH)
+  // SDO tied to GND -> I2C address 0x18
+  if (!imu.begin(0x18)) {
+    Serial.println("ERROR: LIS3DHTR not found at 0x18");
+
+    // Fast blink to indicate hard fault
     while (true) {
-      delay(1000);
+      digitalWrite(LED_PIN, LOW);   // LED on
+      delay(150);
+      digitalWrite(LED_PIN, HIGH);  // LED off
+      delay(150);
     }
   }
 
-  imu.setAccelRange(LSM6DS_ACCEL_RANGE_16_G);
-  imu.setGyroRange(LSM6DS_GYRO_RANGE_2000_DPS);
-  imu.setAccelDataRate(LSM6DS_RATE_104_HZ);
-  imu.setGyroDataRate(LSM6DS_RATE_104_HZ);
+  Serial.println("IMU: LIS3DHTR detected");
 
-  // CSV header for Serial
-  Serial.println("rep_id,t_ms,ax_mps2,ay_mps2,az_mps2,gx_rads,gy_rads,gz_rads,aZ_filt,vZ");
+  imu.setRange(LIS3DH_RANGE_8_G);   // +/- 8g
+  imu.setDataRate(LIS3DH_DATARATE_100_HZ);
+
+  // CSV header for Serial (unchanged, for debugging)
+  Serial.println("rep_id,t_ms,ax_mps2,ay_mps2,az_mps2,gx_rads,gy_rads,gz_rads,aZ_filt,vZ,calibFlag");
 
   // Init BLE
   initBLE();
@@ -172,12 +187,27 @@ void setup() {
 
 // --------- Main loop ---------
 void loop() {
+  // --- Heartbeat LED (always runs) ---
+  {
+    static uint32_t lastBlink_ms = 0;
+    static bool ledOn = false;
+    uint32_t now = millis();
+
+    if (now - lastBlink_ms >= 250) { // ~2 Hz blink
+      lastBlink_ms = now;
+      ledOn = !ledOn;
+      digitalWrite(LED_PIN, ledOn ? LOW : HIGH); // active-LOW
+    }
+  }
+
+  // Check for Serial calibration command (unchanged)
   while (Serial.available() > 0) {
     char c = Serial.read();
     if (c == 'C' || c == 'c') {
       startCalibration();
     }
   }
+
   // Pace roughly at IMU ODR, but use actual dt
   const uint32_t period_us = (uint32_t)(1e6f / ODR_HZ);
   uint32_t nowUS = micros();
@@ -190,21 +220,22 @@ void loop() {
   float dt = diff / 1e6f;  // seconds
   lastMicros = nowUS;
 
-  // Get IMU data
-  sensors_event_t acc, gy, temp;
-  imu.getEvent(&acc, &gy, &temp);
+  // Get IMU data: LIS3DHTR accel only
+  sensors_event_t accEvent;
+  imu.getEvent(&accEvent);
 
-  float ax = acc.acceleration.x;
-  float ay = acc.acceleration.y;
-  float az = acc.acceleration.z;
+  float ax = accEvent.acceleration.x;
+  float ay = accEvent.acceleration.y;
+  float az = accEvent.acceleration.z;
 
-  float gx = gy.gyro.x;
-  float gy_ = gy.gyro.y;
-  float gz = gy.gyro.z;
+  // No gyro on LIS3DHTR – keep CSV shape, just output zeros allows for future change
+  float gx = 0.0f;
+  float gy_ = 0.0f;
+  float gz = 0.0f;
 
-    uint32_t t_ms = millis();
+  uint32_t t_ms = millis();
 
-  // --- Gravity calibration logic ---
+  // --- Gravity calibration logic (unchanged) ---
   if (calibRunning) {
     calibSumAz += az;
     calibSamples++;
@@ -216,21 +247,16 @@ void loop() {
         Serial.println(gravityEst, 6);
       }
       calibRunning = false;
-      calibFlag = 0;
+      calibFlag    = 0;
 
       // Reset motion state after calibration
-      vZ = 0.0f;
+      vZ      = 0.0f;
       aZ_filt = 0.0f;
-      state = IDLE;
-      rep_id = 0;
+      state   = IDLE;
+      rep_id  = 0;
     }
-
-    // During calibration we can optionally skip integration/rep logic,
-    // but still log raw data if you want. For now, fall through so you see data.
+    // Fall through so you still get data while calibrating
   }
-
-  
-
 
   // Vertical accel: subtract gravity, low-pass filter
   float aZ_no_g = az - gravityEst;
@@ -286,16 +312,16 @@ void loop() {
   Serial.print(',');
   Serial.print(aZ_filt, 6);
   Serial.print(',');
-  Serial.println(vZ, 6);
+  Serial.print(vZ, 6);
   Serial.print(',');
-  Serial.print(calibFlag);
-  Serial.println();
+  Serial.println(calibFlag);
 
-  if(calibFlag == 1){
+  if (calibFlag == 1) {
     Serial.println("CAL: calibrating...");
   }
 
-  // BLE: send a CSV line ~20 Hz if connected
+  // BLE: send CSV line ~20 Hz whenever connected
+  // Format: "<t_ms>,<aZ_filt>,<vZ>,<rep_id>,<calibFlag>"
   if (deviceConnected && (t_ms - lastBLE_ms) >= 50) {  // 50 ms = 20 Hz
     lastBLE_ms = t_ms;
 
@@ -303,12 +329,12 @@ void loop() {
     int len = snprintf(
         buf,
         sizeof(buf),
-        "%lu,%.3f,%.3f,%u",
+        "%lu,%.5f,%.5f,%u,%u",
         (unsigned long)t_ms,
         aZ_filt,
         vZ,
-        rep_id,
-        calibFlag
+        (unsigned int)rep_id,
+        (unsigned int)calibFlag
     );
 
     if (len > 0 && pDataChar != nullptr) {
