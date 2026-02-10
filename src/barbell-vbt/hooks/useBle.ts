@@ -27,7 +27,7 @@ async function ensureBlePermissions(): Promise<boolean> {
 
   const res = await PermissionsAndroid.requestMultiple(wanted);
   return Object.values(res).every(
-    (v) => v === PermissionsAndroid.RESULTS.GRANTED
+    (v) => v === PermissionsAndroid.RESULTS.GRANTED,
   );
 }
 
@@ -78,7 +78,7 @@ export function useBle() {
       const name = dev.name || dev.localName;
       if (name === TARGET_NAME) {
         setDevices((prev) =>
-          prev.find((d) => d.id === dev.id) ? prev : [...prev, dev]
+          prev.find((d) => d.id === dev.id) ? prev : [...prev, dev],
         );
       }
     });
@@ -127,8 +127,8 @@ export function useBle() {
             const repWithinSet = Math.max(0, s.repId - startRepRef.current);
             setCurrentSetRep(repWithinSet);
           }
-        }
-      )
+        },
+      ),
     );
   };
 
@@ -187,35 +187,38 @@ export function useBle() {
     for (const s of samples) {
       const repWithinSet = s.repId - startRepRef.current;
       if (repWithinSet <= 0) continue; // ignore "rep 0" / anything before start
-      if (s.vZ <= 0) continue; // concentric only
 
-      if (!repMap.has(repWithinSet)) {
-        repMap.set(repWithinSet, []);
-      }
+      // Concentric only (tweak threshold to reduce noise)
+      if (s.vZ <= 0.05) continue;
+
+      if (!repMap.has(repWithinSet)) repMap.set(repWithinSet, []);
       repMap.get(repWithinSet)!.push(s.vZ);
     }
 
     const repIdsWithin = Array.from(repMap.keys()).sort((a, b) => a - b);
-    const totalReps = repIdsWithin.length;
 
     let peakConcentricVel = 0;
-    const perRepMeans: number[] = [];
+    const repMeanConcentricVels: number[] = [];
+    const repPeakConcentricVels: number[] = [];
 
     for (const repIdWithin of repIdsWithin) {
       const vels = repMap.get(repIdWithin)!;
       if (!vels.length) continue;
 
-      const mean =
-        vels.reduce((acc, v) => acc + v, 0) / Math.max(vels.length, 1);
-      perRepMeans.push(mean);
-
+      const mean = vels.reduce((acc, v) => acc + v, 0) / vels.length;
       const peak = Math.max(...vels);
+
+      repMeanConcentricVels.push(mean);
+      repPeakConcentricVels.push(peak);
+
       if (peak > peakConcentricVel) peakConcentricVel = peak;
     }
 
+    const totalReps = repMeanConcentricVels.length;
+
     const meanConcentricVel =
-      perRepMeans.length > 0
-        ? perRepMeans.reduce((a, b) => a + b, 0) / perRepMeans.length
+      totalReps > 0
+        ? repMeanConcentricVels.reduce((a, b) => a + b, 0) / totalReps
         : 0;
 
     const summary: SetSummary = {
@@ -223,11 +226,11 @@ export function useBle() {
       setDurMs,
       meanConcentricVel,
       peakConcentricVel,
+      repMeanConcentricVels,
+      repPeakConcentricVels,
     };
 
     setSummary(summary);
-    // optional: leave currentSetRep showing last rep, or reset to 0
-    // setCurrentSetRep(0);
   };
 
   // Send "start calibration" command to firmware via control characteristic
@@ -243,7 +246,7 @@ export function useBle() {
       await dev.writeCharacteristicWithResponseForService(
         SERVICE_UUID,
         CONTROL_UUID,
-        base64
+        base64,
       );
 
       // Optimistically set calibrating until data comes back with calibFlag=1/0
