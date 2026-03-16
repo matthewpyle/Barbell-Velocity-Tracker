@@ -65,4 +65,7 @@ export type SetSummary = {
   setDurMs: number;
   meanConcentricVel: number; // m/s
   peakConcentricVel: number; // m/s
+
+  repMeanConcentricVels: number[]; // per rep mean concentric v
+  repPeakConcentricVels: number[]; // per rep peak concentric v
 };
