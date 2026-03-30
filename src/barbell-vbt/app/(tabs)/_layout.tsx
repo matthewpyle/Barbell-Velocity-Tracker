@@ -4,20 +4,36 @@ import React from "react";
 import { HapticTab } from "@/components/haptic-tab";
 import { IconSymbol } from "@/components/ui/icon-symbol";
 import { useColorScheme } from "@/hooks/use-color-scheme";
+import { Colors } from "@/constants/theme";
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
+  const theme = Colors[colorScheme ?? "dark"];
 
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarButton: HapticTab,
-        tabBarActiveTintColor: "#111",
-        tabBarInactiveTintColor: "#999",
+        tabBarActiveTintColor: theme.tabIconSelected,
+        tabBarInactiveTintColor: theme.tabIconDefault,
+        tabBarStyle: {
+          backgroundColor: theme.surface,
+          borderTopColor: theme.border,
+          borderTopWidth: 1,
+          height: 70,
+          paddingTop: 8,
+          paddingBottom: 10,
+        },
+        tabBarLabelStyle: {
+          fontSize: 12,
+          fontWeight: "600",
+        },
+        sceneStyle: {
+          backgroundColor: theme.background,
+        },
       }}
     >
-      {/* Home – app/(tabs)/index.tsx */}
       <Tabs.Screen
         name="index"
         options={{
@@ -28,7 +44,6 @@ export default function TabLayout() {
         }}
       />
 
-      {/* Train – app/(tabs)/train.tsx */}
       <Tabs.Screen
         name="train"
         options={{
@@ -43,7 +58,6 @@ export default function TabLayout() {
         }}
       />
 
-      {/* Device – app/(tabs)/device.tsx */}
       <Tabs.Screen
         name="device"
         options={{
@@ -58,7 +72,6 @@ export default function TabLayout() {
         }}
       />
 
-      {/* History – app/(tabs)/history.tsx */}
       <Tabs.Screen
         name="history"
         options={{
